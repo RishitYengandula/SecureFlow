@@ -4,6 +4,10 @@ const logSchema = new mongoose.Schema(
   {
     username: { type: String, required: true },
     entities: { type: [String], default: [] },
+    eventType: { type: String, default: "unknown" },
+    // numeric severity score 0.0-1.0 and human label
+    severityScore: { type: Number, default: 0 },
+    severity: { type: String, default: "Low" },
     sanitized: { type: String, default: "" },
     // numeric overall confidence score (0.00 - 1.00)
     confidence: { type: Number, default: 0 },

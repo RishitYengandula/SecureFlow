@@ -2,3 +2,6 @@ fastapi==0.115.0
 uvicorn==0.30.5
 pydantic==2.8.2
 spacy==3.7.6
+# Transformer support (for en_core_web_trf). Installing spacy[transformers]
+# will pull in 'transformers' and a compatible backend (usually torch).
+spacy[transformers]>=3.7.0

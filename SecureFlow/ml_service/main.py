@@ -25,6 +25,11 @@ def detect_entities(text):
     if re.search(pan_pattern, text):
         entities.append("PAN")
 
+    # Heuristic: detect name introductions like "my name is rishit" or "i am rishit"
+    intro_name_re = re.compile(r"\b(?:my name is|i am|i'm|call me)\s+([A-Za-z][A-Za-z'`\-]+(?:\s+[A-Za-z][A-Za-z'`\-]+)*)", re.IGNORECASE)
+    if intro_name_re.search(text):
+        entities.append("PERSON")
+
     return entities
 
 @app.post("/analyze")

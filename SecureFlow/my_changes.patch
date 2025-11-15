@@ -1,0 +1,366 @@
+diff --git a/SecureFlow/frontend/src/components/Dashboard.jsx b/SecureFlow/frontend/src/components/Dashboard.jsx
+index d7d8ee1c..0d4254cb 100644
+--- a/SecureFlow/frontend/src/components/Dashboard.jsx
++++ b/SecureFlow/frontend/src/components/Dashboard.jsx
+@@ -76,40 +76,56 @@ export default function Dashboard() {
+               >
+                 <p className="text-xs text-gray-400 mb-1">
+                   <span className="text-fuchsia-400 font-medium">Time:</span>{" "}
+-                  {new Date(log.ts || log.timestamp).toLocaleString()}
++                  {(() => {
++                    const raw = log.createdAt || log.ts || log.timestamp || null;
++                    if (!raw) return "Invalid Date";
++                    const d = new Date(raw);
++                    return isNaN(d.getTime()) ? "Invalid Date" : d.toLocaleString();
++                  })()}
+                 </p>
+                 <p className="text-xs text-gray-400 mb-1">
+                   <span className="text-cyan-400 font-medium">Event:</span>{" "}
+-                  {log.event || "Unknown"}
++                  {(log.eventType || log.event || "Unknown Event")}
+                 </p>
+                 <div className="text-xs text-gray-400 mb-1">
+                   <span className="text-amber-400 font-medium">Entities:</span>{" "}
+                   <div className="inline-flex flex-wrap items-center ml-2">
+                     {Array.isArray(log.entities) && log.entities.length ? (
+-                      log.entities.map((ent, i) => (
+-                        <span
+-                          key={i}
+-                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium mr-2 mt-2 ${getBadgeClass(
+-                            ent
+-                          )}`}
+-                        >
+-                          {(ent || "").toUpperCase()}
+-                        </span>
++                      log.entities.map((ent, i) => {
++                        // defend against entity being object or string
++                        const label = typeof ent === "string" ? ent : (ent?.type || ent?.label || JSON.stringify(ent));
++                        return (
++                          <span
++                            key={i}
++                            className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium mr-2 mt-2 ${getBadgeClass(
++                              label
++                            )}`}
++                          >
++                            {(label || "").toUpperCase()}
++                          </span>
++                        );
++                      })
++                    ) : log.entities && typeof log.entities === 'object' && Object.keys(log.entities).length ? (
++                      // sometimes entities come as object map
++                      Object.keys(log.entities).map((k, i) => (
++                        <span key={i} className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium mr-2 mt-2 ${getBadgeClass(k)}`}>{k.toUpperCase()}</span>
+                       ))
+-                    ) : log.summary ? (
+-                      // If older logs used `summary`, show as JSON string fallback
+-                      <span>{JSON.stringify(log.summary)}</span>
+                     ) : (
+                       <span className="text-gray-500">No entity data</span>
+                     )}
+                   </div>
+                 </div>
+-                <div className="text-xs text-gray-500 italic mt-1">
++                <div className="text-xs text-gray-400 mt-1">
+                   <div className="flex items-center justify-between">
+-                    <div>
+-                      {log.sanitized || log.summary
+-                        ? "Encrypted text saved securely."
+-                        : "No sanitized data available."}
++                    <div className="truncate max-w-[60%]">
++                      <strong className="text-fuchsia-400">Sanitized:</strong>{" "}
++                      <span className="italic text-gray-300">
++                        {(() => {
++                          const s = (log.sanitized || log.summary || "") + "";
++                          if (!s) return "No sanitized data";
++                          return s.length > 120 ? s.slice(0, 120) + "..." : s;
++                        })()}
++                      </span>
+                     </div>
+                     <div className="flex items-center gap-2">
+                       <button
+diff --git a/SecureFlow/frontend/src/components/PrivacyAnalyzer.jsx b/SecureFlow/frontend/src/components/PrivacyAnalyzer.jsx
+index dc336b24..ca4c4fc5 100644
+--- a/SecureFlow/frontend/src/components/PrivacyAnalyzer.jsx
++++ b/SecureFlow/frontend/src/components/PrivacyAnalyzer.jsx
+@@ -117,17 +117,17 @@ export default function PrivacyAnalyzer() {
+         />
+         <label
+           htmlFor="fileUpload"
+-      {error && (
+-        <ErrorModal
+-          title={error.title}
+-          message={error.message}
+-          onClose={() => setError(null)}
+-        />
+-      )}
+           className={`cursor-pointer text-fuchsia-400 font-medium hover:underline ${loading ? 'pointer-events-none opacity-50' : ''}`}
+         >
+           {loading ? 'Analyzing...' : 'Click to upload PDF or image'}
+         </label>
++        {error && (
++          <ErrorModal
++            title={error.title}
++            message={error.message}
++            onClose={() => setError(null)}
++          />
++        )}
+ 
+         {file && (
+           <div className="mt-3 text-center">
+diff --git a/SecureFlow/ml_service/__pycache__/app.cpython-312.pyc b/SecureFlow/ml_service/__pycache__/app.cpython-312.pyc
+index 4b8f3c39..695ac1d3 100644
+Binary files a/SecureFlow/ml_service/__pycache__/app.cpython-312.pyc and b/SecureFlow/ml_service/__pycache__/app.cpython-312.pyc differ
+diff --git a/SecureFlow/ml_service/__pycache__/detector.cpython-312.pyc b/SecureFlow/ml_service/__pycache__/detector.cpython-312.pyc
+index 1b6e109b..d6639ee2 100644
+Binary files a/SecureFlow/ml_service/__pycache__/detector.cpython-312.pyc and b/SecureFlow/ml_service/__pycache__/detector.cpython-312.pyc differ
+diff --git a/SecureFlow/ml_service/app.py b/SecureFlow/ml_service/app.py
+index 42e8d0ec..8c92884e 100644
+--- a/SecureFlow/ml_service/app.py
++++ b/SecureFlow/ml_service/app.py
+@@ -1,6 +1,22 @@
+ # ml_service/app.py
+ from fastapi import FastAPI, Request
+ from pydantic import BaseModel
++import re
++from typing import List, Dict, Tuple
++import math
++import logging
++
++# transformer imports attempted lazily
++TRANSFORMER_AVAILABLE = False
++MODEL = None
++LABEL_EMBEDDINGS = None
++import numpy as np
++
++try:
++    from sentence_transformers import SentenceTransformer
++    TRANSFORMER_AVAILABLE = True
++except Exception:
++    TRANSFORMER_AVAILABLE = False
+ 
+ app = FastAPI()
+ 
+@@ -16,3 +32,213 @@ async def analyze(request: TextRequest):
+         "entities": ["EMAIL"],
+         "confidence": 0.97
+     }
++
++
++# Lightweight contextual classifier prototype
++class ClassifyRequest(BaseModel):
++    text: str
++
++
++LABEL_KEYWORDS = {
++    "Health": ["chemotherapy", "cancer", "oncology", "surgery", "diagnosed", "treatment"],
++    "Finance": ["merger", "acquisition", "quarter", "earnings", "revenue", "merger plan"],
++    "Religion": ["faith", "religion", "pray", "temple", "mosque", "dietary rules"],
++    "Defense/Security": ["prototype", "weapon", "defense", "classified", "test", "secure"],
++    "Layoffs": ["terminate", "layoff", "furlough", "redundant", "headcount", "employees"],
++    "Confidential Projects": ["project", "confidential", "secret", "do not share", "internal"],
++    "Internal Strategy": ["strategy", "roadmap", "migration plan", "launch", "Q4"],
++    "Intellectual Property": ["patent", "ip", "proprietary", "trade secret"],
++    "Employee HR Issues": ["disciplinary", "performance", "terminated", "cheating", "complaint"],
++    "Legal Risk": ["lawsuit", "legal", "compliance", "regulatory", "investigation"],
++}
++
++SANITIZE_TOKENS = {
++    "Layoffs": "<layoffs_event>",
++    "Confidential Projects": "<confidential_project>",
++    "Internal Strategy": "<internal_strategy>",
++    "Health": "<health_context>",
++    "Finance": "<finance_context>",
++    "Defense/Security": "<defense_context>",
++}
++
++
++def _keyword_score(text: str):
++    t = text.lower()
++    scores = {}
++    for label, kws in LABEL_KEYWORDS.items():
++        count = 0
++        for kw in kws:
++            if kw in t:
++                count += 1
++        if count:
++            scores[label] = float(count) / max(1, len(kws))
++    return scores
++
++
++def _load_transformer():
++    global MODEL, LABEL_EMBEDDINGS
++    if not TRANSFORMER_AVAILABLE:
++        return
++    try:
++        MODEL = SentenceTransformer("all-MiniLM-L6-v2")
++        # build label texts by joining label name and keywords
++        label_texts = [label + " " + " ".join(kws) for label, kws in LABEL_KEYWORDS.items()]
++        LABEL_EMBEDDINGS = MODEL.encode(label_texts, convert_to_numpy=True, normalize_embeddings=True)
++        logging.info("Transformer model loaded with %d labels", len(label_texts))
++    except Exception as e:
++        logging.warning("Failed to load transformer model: %s", e)
++        LABEL_EMBEDDINGS = None
++
++
++def _transformer_score(text: str) -> Dict[str, float]:
++    # returns dict label->score (0..1) using cosine similarity against label embeddings
++    if not TRANSFORMER_AVAILABLE or MODEL is None or LABEL_EMBEDDINGS is None:
++        return {}
++    try:
++        emb = MODEL.encode([text], convert_to_numpy=True, normalize_embeddings=True)[0]
++        sims = np.dot(LABEL_EMBEDDINGS, emb)
++        # map sims to label names (labels order matches LABEL_KEYWORDS.keys())
++        labels = list(LABEL_KEYWORDS.keys())
++        scores = {labels[i]: float(sims[i]) for i in range(len(labels))}
++        # normalize similarities to 0..1 (sims are cosine in [-1,1])
++        for k in scores:
++            scores[k] = max(0.0, min(1.0, (scores[k] + 1) / 2))
++        return scores
++    except Exception:
++        return {}
++
++
++def _severity_for_label(label: str, score: float):
++    # simple heuristics: defense/legal/high -> High; layoffs/confidential->High; health/finance->Medium
++    if label in ("Defense/Security", "Legal Risk"):
++        base = "High"
++    elif label in ("Layoffs", "Confidential Projects", "Intellectual Property"):
++        base = "High"
++    elif label in ("Health", "Finance"):
++        base = "Medium"
++    else:
++        base = "Low"
++
++    # escalate if confidence high
++    if score >= 0.8 and base != "High":
++        return "High"
++    if score >= 0.5 and base == "Low":
++        return "Medium"
++    return base
++
++
++def _sanitize_preview(text: str, labels_found: list):
++    # span-based non-overlapping replacement
++    spans: List[Tuple[int,int,str]] = []
++    t = text
++
++    # collect spans for label keywords
++    for label in labels_found:
++        token = SANITIZE_TOKENS.get(label)
++        if not token:
++            continue
++        for kw in LABEL_KEYWORDS.get(label, []):
++            # case-insensitive find all
++            for m in re.finditer(re.escape(kw), t, re.IGNORECASE):
++                spans.append((m.start(), m.end(), token))
++
++    # merge and filter overlapping spans: sort by start, take non-overlapping
++    spans.sort(key=lambda x: (x[0], -(x[1]-x[0])))
++    merged = []
++    last_end = -1
++    for s, e, token in spans:
++        if s >= last_end:
++            merged.append((s, e, token))
++            last_end = e
++
++    if not merged:
++        return text
++
++    # build output using merged spans
++    out_parts = []
++    cursor = 0
++    for s, e, token in merged:
++        if cursor < s:
++            out_parts.append(t[cursor:s])
++        out_parts.append(token)
++        cursor = e
++    if cursor < len(t):
++        out_parts.append(t[cursor:])
++    return "".join(out_parts)
++
++
++@app.post("/classify")
++async def classify(request: ClassifyRequest):
++    text = request.text or ""
++
++    # 1) If regex-based detectors find PII, return PII with high confidence
++    try:
++        from .detector import _regex_entities
++    except Exception:
++        # allow running as script (no package)
++        from detector import _regex_entities
++
++    regex_ents = _regex_entities(text)
++    if regex_ents:
++        # map regex types to PII category
++        labels = [{"name": "PII", "score": 0.99}]
++        # build span replacements from regex entities to avoid accidental partial replacements
++        replacements = []
++        for e in regex_ents:
++            replacements.append((e["start"], e["end"], f"<{e['type']}>", e["text"]))
++        # sort and non-overlap
++        replacements.sort(key=lambda x: (x[0], -(x[1]-x[0])))
++        sanitized_parts = []
++        cursor = 0
++        for s, e, token, orig in replacements:
++            if cursor < s:
++                sanitized_parts.append(text[cursor:s])
++            sanitized_parts.append(token)
++            cursor = e
++        if cursor < len(text):
++            sanitized_parts.append(text[cursor:])
++        sanitized = "".join(sanitized_parts)
++        return {
++            "labels": labels,
++            "top_label": "PII",
++            "confidence": 0.99,
++            "severity": "High",
++            "recommended_action": "mask",
++            "sanitized_preview": sanitized,
++        }
++
++    # 2) Contextual scoring: prefer transformer if available
++    scores = {}
++    if TRANSFORMER_AVAILABLE:
++        # ensure model loaded
++        if MODEL is None or LABEL_EMBEDDINGS is None:
++            _load_transformer()
++        scores = _transformer_score(text)
++    if not scores:
++        # fallback to keyword scoring
++        scores = _keyword_score(text)
++    if not scores:
++        return {
++            "labels": [],
++            "top_label": None,
++            "confidence": 0.0,
++            "severity": "Low",
++            "recommended_action": "none",
++            "sanitized_preview": "",
++        }
++
++    # pick best label by score
++    best_label = max(scores.items(), key=lambda x: x[1])
++    label_name, label_score = best_label[0], best_label[1]
++    severity = _severity_for_label(label_name, label_score)
++    action = "mask" if severity in ("High", "Medium") else "review"
++    sanitized = _sanitize_preview(text, [label_name])
++
++    return {
++        "labels": [{"name": label_name, "score": round(label_score, 3)}],
++        "top_label": label_name,
++        "confidence": round(label_score, 3),
++        "severity": severity,
++        "recommended_action": action,
++        "sanitized_preview": sanitized,
++    }
+diff --git a/SecureFlow/ml_service/requirements.txt b/SecureFlow/ml_service/requirements.txt
+index b935176f..71734d34 100644
+--- a/SecureFlow/ml_service/requirements.txt
++++ b/SecureFlow/ml_service/requirements.txt
+@@ -2,3 +2,5 @@ fastapi==0.115.0
+ uvicorn==0.30.5
+ pydantic==2.8.2
+ spacy==3.7.6
++sentence-transformers==2.2.2
++torch>=1.13.0

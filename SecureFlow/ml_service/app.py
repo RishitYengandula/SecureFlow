@@ -22,22 +22,25 @@ class EntityOut(BaseModel):
 
 # Try to load spaCy model; if missing attempt to download it.
 nlp = None
-MODEL_NAME = "en_core_web_sm"
 try:
     import spacy
+    # Prefer a fine-tuned local model if present, then the transformer model,
+    # otherwise fall back to the small model. Attempt to download transformer
+    # if not present is left to operator (large download).
     try:
-        nlp = spacy.load(MODEL_NAME)
-        logger.info(f"Loaded spaCy model {MODEL_NAME}")
+        nlp = spacy.load("models/ner_lowercase")
+        logger.info("Loaded local fine-tuned model models/ner_lowercase")
     except Exception:
-        # try to download model and load again
         try:
-            import spacy.cli
-            spacy.cli.download(MODEL_NAME)
-            nlp = spacy.load(MODEL_NAME)
-            logger.info(f"Downloaded and loaded spaCy model {MODEL_NAME}")
-        except Exception as ex:
-            logger.error("Failed to download/load spaCy model: %s", ex)
-            nlp = None
+            nlp = spacy.load("en_core_web_trf")
+            logger.info("Loaded spaCy transformer model en_core_web_trf")
+        except Exception:
+            try:
+                nlp = spacy.load("en_core_web_sm")
+                logger.info("Loaded fallback spaCy model en_core_web_sm")
+            except Exception as ex:
+                logger.error("Failed to load any spaCy model: %s", ex)
+                nlp = None
 except Exception as ex:
     logger.error("spaCy import failed: %s", ex)
     nlp = None
