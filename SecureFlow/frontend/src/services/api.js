@@ -122,3 +122,25 @@ export async function uploadFile(file) {
     return { error: "Upload failed" };
   }
 }
+
+// =============================
+// ✅ IMAGE UPLOAD (OCR via Tesseract)
+// =============================
+export async function uploadImage(file) {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  try {
+    const response = await fetch(`${PRIVACY_URL}/analyze-image`, {
+      method: "POST",
+      headers: authHeaders(false), // ❗ No JSON header here
+      body: formData,
+    });
+
+    if (!response.ok) throw new Error("Image upload failed");
+    return await response.json();
+  } catch (error) {
+    console.error("❌ Error uploading image:", error);
+    return { error: "Image upload failed" };
+  }
+}
