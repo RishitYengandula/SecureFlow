@@ -292,6 +292,70 @@ async function fetchMLNER(text) {
 
 
 // ===========================
+// 🧩 Fetch Contextual Sensitivity (ml_service)
+// ===========================
+async function fetchContextualAnalysis(text) {
+  const url = "http://127.0.0.1:8000/api/analyze/context";
+  try {
+    const response = await axios.post(url, { text }, { timeout: 7000 });
+    const data = response.data || {};
+
+    // Normalize returned structure to ensure keys exist
+    return {
+      level: data.level ?? 0,
+      category: data.category ?? data.cat ?? "none",
+      is_sensitive: data.is_sensitive ?? false,
+      matched_terms: data.matched_terms ?? data.matchedTerms ?? [],
+      reason: data.reason ?? data.detail ?? null,
+      sanitized_text: data.sanitized_text ?? data.sanitized ?? data.sanitizedText ?? null,
+      raw: data,
+    };
+  } catch (error) {
+    // Log full error for diagnostics
+    console.error("❌ ML contextual service error:", error && error.stack ? error.stack : error);
+
+    // If ML service returned a response body (4xx/5xx), return that body so frontend can see details
+    if (error.response && error.response.data) {
+      const d = error.response.data;
+      return {
+        level: d.level ?? 0,
+        category: d.category ?? d.cat ?? "none",
+        is_sensitive: d.is_sensitive ?? false,
+        matched_terms: d.matched_terms ?? d.matchedTerms ?? [],
+        reason: d.reason ?? d.detail ?? (typeof d === "string" ? d : JSON.stringify(d)),
+        sanitized_text: d.sanitized_text ?? d.sanitized ?? d.sanitizedText ?? null,
+        raw: d,
+        error: true,
+        status: error.response.status,
+      };
+    }
+
+    // For network/connection errors, rethrow so controller's catch will handle and return 500.
+    throw error;
+  }
+}
+
+
+// ===========================
+// 🧩 Fetch Semantic Sanitization (ml_service)
+// ===========================
+async function fetchSemanticSanitize(text) {
+  const url = "http://127.0.0.1:8000/api/analyze/semantic-sanitize";
+  try {
+    const response = await axios.post(url, { text }, { timeout: 7000 });
+    return response.data || {};
+  } catch (error) {
+    console.error("❌ ML semantic sanitizer error:", error && error.stack ? error.stack : error);
+    if (error.response && error.response.data) {
+      return { error: true, raw: error.response.data, status: error.response.status };
+    }
+    // rethrow network errors so controller handles them
+    throw error;
+  }
+}
+
+
+// ===========================
 // 📌 1. Analyze Text
 // ===========================
 export const analyzeText = async (req, res) => {
@@ -301,6 +365,25 @@ export const analyzeText = async (req, res) => {
 
     const findings = runDetectors(text);
     const mlEntities = await fetchMLNER(text);
+    const contextual = await fetchContextualAnalysis(text);
+    // semantic sanitization (rewrite to an abstracted, non-identifying sentence)
+    let semantic = null;
+    try {
+      semantic = await fetchSemanticSanitize(text);
+    } catch (err) {
+      console.error("❌ Semantic sanitize fetch failed:", err && err.stack ? err.stack : err.message || err);
+      // Provide a safe fallback so the frontend always has a semantic sanitized string to show.
+      semantic = {
+        error: true,
+        reason: err.message || String(err),
+        // fallback sanitized value: prefer contextual redaction preview or regex sanitized
+        sanitized: (contextual && contextual.sanitized_text) || sanitized || text,
+        removed_details: (contextual && contextual.matched_terms) ? contextual.matched_terms.map(t => ({ term: t, category: (contextual && contextual.category) || 'none' })) : [],
+        level: (contextual && contextual.level) || 0,
+        category: (contextual && contextual.category) || 'none',
+        variants: {},
+      };
+    }
 
     const sanitized = sanitizeText(text, findings, mlEntities);
     const entityTypes = [...new Set(findings.map((f) => f.type))];
@@ -319,6 +402,8 @@ export const analyzeText = async (req, res) => {
       entities: entityTypes,
       eventType: "text_scan",
       sanitized,
+      semanticSanitized: semantic && (semantic.vague_paraphrase || semantic.sanitized || semantic.sanitized_text),
+      semanticVariants: (semantic && semantic.variants) || {},
       confidence: avgRounded,
       confidenceMap,
       severityScore: sev.score,
@@ -334,6 +419,9 @@ export const analyzeText = async (req, res) => {
       allEntities: [...new Set([...entityTypes, ...mlEntityTypes])],
       findings: findings.map((f) => ({ ...f, source: "regex" })),
       mlFindings: mlEntities.map((e) => ({ ...e, source: "ml" })),
+      contextual,
+      semantic,
+      semanticVariants: (semantic && semantic.variants) || {},
       entityCount: findings.length,
       sanitized,
       confidenceScore: avgRounded,
@@ -345,6 +433,38 @@ export const analyzeText = async (req, res) => {
   } catch (error) {
     console.error("❌ Analyze error:", error.message);
     res.status(500).json({ error: "Failed to analyze text" });
+  }
+};
+
+// ===========================
+// 📌 Direct contextual analysis proxy
+// ===========================
+export const analyzeContext = async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text) return res.status(400).json({ error: "Text required" });
+
+    const result = await fetchContextualAnalysis(text);
+    return res.status(200).json({ ok: true, ...result });
+  } catch (err) {
+    console.error("❌ Context analyze error:", err.message);
+    return res.status(500).json({ error: "Failed to analyze contextual text" });
+  }
+};
+
+// ===========================
+// 📌 Semantic sanitize proxy
+// ===========================
+export const analyzeSemantic = async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text) return res.status(400).json({ error: "Text required" });
+
+    const result = await fetchSemanticSanitize(text);
+    return res.status(200).json({ ok: true, ...result });
+  } catch (err) {
+    console.error("❌ Semantic analyze error:", err && err.stack ? err.stack : err.message || err);
+    return res.status(500).json({ error: "Failed to analyze semantic text" });
   }
 };
 
@@ -378,6 +498,23 @@ export const uploadFile = async (req, res) => {
     const cleanedText = cleanOCRText(text);
     const findings = runDetectors(cleanedText);
     const mlEntities = await fetchMLNER(cleanedText);
+    const contextual = await fetchContextualAnalysis(cleanedText);
+    // semantic sanitization
+    let semantic = null;
+    try {
+      semantic = await fetchSemanticSanitize(cleanedText);
+    } catch (err) {
+      console.error("❌ Semantic sanitize fetch failed:", err && err.stack ? err.stack : err.message || err);
+      semantic = {
+        error: true,
+        reason: err.message || String(err),
+        sanitized: (contextual && contextual.sanitized_text) || sanitized || cleanedText,
+        removed_details: (contextual && contextual.matched_terms) ? contextual.matched_terms.map(t => ({ term: t, category: (contextual && contextual.category) || 'none' })) : [],
+        level: (contextual && contextual.level) || 0,
+        category: (contextual && contextual.category) || 'none',
+        variants: {},
+      };
+    }
     const sanitized = sanitizeText(cleanedText, findings, mlEntities);
 
     const entityTypes = [...new Set(findings.map((f) => f.type))];
@@ -393,6 +530,8 @@ export const uploadFile = async (req, res) => {
       entities: entityTypes,
       eventType: "file_scan",
       sanitized,
+      semanticSanitized: semantic && (semantic.vague_paraphrase || semantic.sanitized || semantic.sanitized_text),
+      semanticVariants: (semantic && semantic.variants) || {},
       confidence: avgRounded,
       confidenceMap,
       severityScore: sev.score,
@@ -405,6 +544,9 @@ export const uploadFile = async (req, res) => {
       extractedText: text,
       findings: findings.map((f) => ({ ...f, source: "regex" })),
       mlFindings: mlEntities.map((e) => ({ ...e, source: "ml" })),
+      contextual,
+      semantic,
+      semanticVariants: (semantic && semantic.variants) || {},
       entities: entityTypes,
       allEntities: [...new Set([...entityTypes, ...mlEntities.map(e => e.label)])],
       sanitized,
@@ -438,6 +580,23 @@ export const analyzeImage = async (req, res) => {
     const cleanedText = cleanOCRText(extractedText);
     const findings = runDetectors(cleanedText);
     const mlEntities = await fetchMLNER(cleanedText);
+    const contextual = await fetchContextualAnalysis(cleanedText);
+    // semantic sanitization
+    let semantic = null;
+    try {
+      semantic = await fetchSemanticSanitize(cleanedText);
+    } catch (err) {
+      console.error("❌ Semantic sanitize fetch failed:", err && err.stack ? err.stack : err.message || err);
+      semantic = {
+        error: true,
+        reason: err.message || String(err),
+        sanitized: (contextual && contextual.sanitized_text) || sanitized || cleanedText,
+        removed_details: (contextual && contextual.matched_terms) ? contextual.matched_terms.map(t => ({ term: t, category: (contextual && contextual.category) || 'none' })) : [],
+        level: (contextual && contextual.level) || 0,
+        category: (contextual && contextual.category) || 'none',
+        variants: {},
+      };
+    }
     const sanitized = sanitizeText(cleanedText, findings, mlEntities);
 
     const entityTypes = [...new Set(findings.map((f) => f.type))];
@@ -453,6 +612,8 @@ export const analyzeImage = async (req, res) => {
       entities: entityTypes,
       eventType: "file_scan",
       sanitized,
+      semanticSanitized: semantic && (semantic.vague_paraphrase || semantic.sanitized || semantic.sanitized_text),
+      semanticVariants: (semantic && semantic.variants) || {},
       confidence: avgRounded,
       confidenceMap,
       severityScore: sev.score,
@@ -465,6 +626,9 @@ export const analyzeImage = async (req, res) => {
       extractedText,
       findings: findings.map((f) => ({ ...f, source: "regex" })),
       mlFindings: mlEntities.map((e) => ({ ...e, source: "ml" })),
+      contextual,
+      semantic,
+      semanticVariants: (semantic && semantic.variants) || {},
       entities: entityTypes,
       allEntities: [...new Set([...entityTypes, ...mlEntities.map(e => e.label)])],
       sanitized,

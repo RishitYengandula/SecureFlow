@@ -144,3 +144,22 @@ export async function uploadImage(file) {
     return { error: "Image upload failed" };
   }
 }
+
+// =============================
+// ✅ SEMANTIC SANITIZER (via backend proxy)
+// =============================
+export async function semanticSanitize(text) {
+  try {
+    const response = await fetch(`${PRIVACY_URL}/analyze-semantic`, {
+      method: "POST",
+      headers: authHeaders(true),
+      body: JSON.stringify({ text }),
+    });
+
+    if (!response.ok) throw new Error("Semantic sanitize request failed");
+    return await response.json();
+  } catch (error) {
+    console.error("❌ Error semantic sanitizing text:", error);
+    return { ok: false, error: "Server error" };
+  }
+}

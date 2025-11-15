@@ -5,3 +5,12 @@ spacy==3.7.6
 # Transformer support (for en_core_web_trf). Installing spacy[transformers]
 # will pull in 'transformers' and a compatible backend (usually torch).
 spacy[transformers]>=3.7.0
+
+# Optional: semantic similarity for contextual detection (enables embeddings)
+sentence-transformers>=2.2.2
+
+# Optional paraphraser (small transformer models)
+transformers>=4.30.0
+
+# Testing
+pytest>=7.0.0

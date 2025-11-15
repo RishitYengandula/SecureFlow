@@ -11,8 +11,9 @@ export default function PrivacyAnalyzer() {
   const [selectedEntity, setSelectedEntity] = useState(null);
 
   // derived sanitized text for copy/display
+  // Prefer semantic vague paraphrase when available, then semantic sanitized text, then regex-based sanitized
   const sanitizedText = result
-    ? result.sanitized || result.sanitized_text || result.sanitizedText || "N/A"
+    ? (result.semantic?.vague_paraphrase || result.semantic?.sanitized || result.semantic?.sanitized_text || result.sanitized || result.sanitized_text || result.sanitizedText || "N/A")
     : "N/A";
 
   // Map entity types to Tailwind color classes and border/ring styles
@@ -211,6 +212,35 @@ export default function PrivacyAnalyzer() {
     }
   };
 
+  // Copy arbitrary text (used for variants)
+  const handleCopyText = async (t) => {
+    if (!t) return;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(t);
+      } else {
+        const el = document.createElement("textarea");
+        el.value = t;
+        document.body.appendChild(el);
+        el.select();
+        document.execCommand("copy");
+        document.body.removeChild(el);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error("Copy failed", err);
+      alert("Unable to copy to clipboard");
+    }
+  };
+
+  // Use a variant by replacing the input text so the user can edit/send it
+  const handleUseVariant = (t) => {
+    if (!t) return;
+    setText(t);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   return (
     <div className="p-6 bg-[#0B0B12]/95 border border-gray-800 rounded-2xl backdrop-blur-lg shadow-lg text-gray-200">
       <h2 className="text-xl font-semibold text-fuchsia-400 mb-2">
@@ -281,6 +311,9 @@ export default function PrivacyAnalyzer() {
           >
             {copied ? "Copied!" : "Copy"}
           </button>
+          <div className="absolute right-3 top-12 text-xs text-gray-400 max-w-xs text-right">
+            Copies the semantic "vague" paraphrase when available.
+          </div>
           {/* Regex-detected entities */}
           <div className="text-sm text-gray-300">
             <strong className="text-fuchsia-400">🔍 Regex Detections:</strong>
@@ -361,6 +394,72 @@ export default function PrivacyAnalyzer() {
               </div>
             );
           })()}
+
+          {/* Contextual detection (Levels 2-4) */}
+          {result.contextual && (
+            <div className="text-sm text-gray-300 mt-3">
+              <strong className="text-amber-400">🔎 Contextual Sensitivity:</strong>
+              <div className="mt-2">
+                <p>Level: <span className="font-semibold">{result.contextual.level}</span></p>
+                <p>Category: <span className="font-semibold">{result.contextual.category}</span></p>
+                <p>Is Sensitive: <span className="font-semibold">{String(result.contextual.is_sensitive)}</span></p>
+                {result.contextual.matched_terms && result.contextual.matched_terms.length > 0 && (
+                  <p>Matched: <span className="font-semibold">{result.contextual.matched_terms.join(", ")}</span></p>
+                )}
+                {result.contextual.reason && (
+                  <p className="text-xs text-gray-400 mt-1">Reason: {result.contextual.reason}</p>
+                )}
+              </div>
+            </div>
+          )}
+          {/* Semantic Sanitization (paraphrased abstraction) */}
+          {result.semantic && (
+            <div className="text-sm text-gray-300 mt-3">
+              <strong className="text-emerald-400">📝 Semantic Sanitized Output:</strong>
+              <div className="mt-2">
+                <p className="font-semibold">{result.semantic.sanitized || result.semantic.sanitized_text || 'N/A'}</p>
+                {result.semantic.removed_details && result.semantic.removed_details.length > 0 && (
+                  <div className="mt-2 text-xs text-gray-400">
+                    <strong>Abstracted details:</strong>
+                    <ul className="list-disc ml-5">
+                      {result.semantic.removed_details.map((d, i) => (
+                        <li key={`rd-${i}`}>{d.term} ({d.category})</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <div className="mt-2 text-xs text-gray-400">
+                  <p>Level: <span className="font-semibold">{result.semantic.level}</span></p>
+                  <p>Category: <span className="font-semibold">{result.semantic.category}</span></p>
+                </div>
+                {/* Variants UI: friendly / formal / terse */}
+                {(() => {
+                  const variants = result.semantic?.variants || result.semanticVariants || {};
+                  const keys = Object.keys(variants || {});
+                  if (!keys || keys.length === 0) return null;
+                  return (
+                    <div className="mt-3">
+                      <strong className="text-teal-300">Variants:</strong>
+                      <div className="mt-2 grid grid-cols-1 md:grid-cols-3 gap-3">
+                        {keys.map((k) => (
+                          <div key={`var-${k}`} className="p-3 bg-[#0F1720] border border-gray-700 rounded">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="text-xs text-gray-300 font-semibold">{k.charAt(0).toUpperCase() + k.slice(1)}</div>
+                              <div className="flex gap-2">
+                                <button onClick={() => handleCopyText(variants[k])} className="text-xs px-2 py-1 bg-gray-800 rounded hover:bg-gray-700">Copy</button>
+                                <button onClick={() => handleUseVariant(variants[k])} className="text-xs px-2 py-1 bg-fuchsia-600 rounded hover:opacity-90">Use</button>
+                              </div>
+                            </div>
+                            <div className="mt-2 text-sm text-gray-200 break-words">{variants[k]}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

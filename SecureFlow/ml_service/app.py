@@ -3,6 +3,36 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 import logging
+from fastapi import Request
+import os
+import re
+try:
+    from semantic_sanitizer import sanitize_context_semantic
+except Exception:
+    try:
+        from .semantic_sanitizer import sanitize_context_semantic
+    except Exception:
+        sanitize_context_semantic = None
+
+# Import our contextual detector
+try:
+    from contextual_detector import (
+        detect_contextual_sensitivity,
+        sanitize_contextual_info,
+        REDACTION_TOKENS,
+    )
+except Exception:
+    # If direct import fails (different module path), try a local relative import.
+    try:
+        from .contextual_detector import (
+            detect_contextual_sensitivity,
+            sanitize_contextual_info,
+            REDACTION_TOKENS,
+        )
+    except Exception:
+        detect_contextual_sensitivity = None
+        sanitize_contextual_info = None
+        REDACTION_TOKENS = {}
 
 app = FastAPI()
 logger = logging.getLogger("uvicorn.error")
@@ -54,6 +84,70 @@ async def analyze(request: TextRequest):
         "sanitized_text": text.replace("john.doe@acme.com", "[REDACTED_EMAIL]"),
         "entities": ["EMAIL"],
         "confidence": 0.97,
+    }
+
+
+@app.post("/api/analyze/context")
+async def analyze_context(request: TextRequest):
+    """Analyze text for contextual sensitive information (Levels 2-4).
+
+    Returns sensitivity level, category, matched terms, recommended sanitization mapping,
+    and a sanitized version of the original text.
+    """
+    if detect_contextual_sensitivity is None:
+        raise HTTPException(status_code=500, detail="Contextual detector not available on server")
+
+    # Determine whether to use embeddings. Default is enabled; override via env var USE_EMBEDDINGS
+    use_embeddings_env = os.getenv("USE_EMBEDDINGS", "true").lower()
+    use_embeddings = use_embeddings_env in ("1", "true", "yes")
+
+    # Run detector (use embeddings by default unless disabled)
+    detection = detect_contextual_sensitivity(request.text, use_embeddings=use_embeddings)
+    sanitized = sanitize_contextual_info(request.text, detection)
+
+    # Build recommended sanitization mapping for categories present
+    rec = {}
+    cat = detection.get("category", "none")
+    if cat and cat in REDACTION_TOKENS:
+        rec[cat] = REDACTION_TOKENS[cat]
+    elif detection.get("matched_terms"):
+        # If multiple categories matched, return tokens for all seen categories
+        for term in detection.get("matched_terms", []):
+            # attempt to infer token by searching redaction map
+            for k, v in REDACTION_TOKENS.items():
+                # quick heuristic: if keyword appears in sensitive list
+                if any(re.search(r"\b" + re.escape(term) + r"\b", kw, flags=re.IGNORECASE) for kw in []):
+                    rec[k] = v
+
+    return {
+        "level": detection.get("level"),
+        "category": detection.get("category"),
+        "is_sensitive": detection.get("is_sensitive"),
+        "matched_terms": detection.get("matched_terms"),
+        "recommended_sanitization": rec,
+        "sanitized_text": sanitized,
+        "reason": detection.get("reason"),
+    }
+
+
+@app.post("/api/analyze/semantic-sanitize")
+async def analyze_semantic(request: TextRequest):
+    """Perform semantic sanitization: rewrite sensitive sentences into abstracted forms.
+
+    Returns original text, sanitized version and list of abstracted details.
+    """
+    if sanitize_context_semantic is None:
+        raise HTTPException(status_code=500, detail="Semantic sanitizer not available on server")
+
+    detection = detect_contextual_sensitivity(request.text, use_embeddings=os.getenv("USE_EMBEDDINGS", "true").lower() in ("1", "true", "yes"))
+    sem = sanitize_context_semantic(request.text)
+
+    return {
+        "original": request.text,
+        "sanitized": sem.get("sanitized_text"),
+        "removed_details": sem.get("removed_details", []),
+        "level": sem.get("level", detection.get("level")),
+        "category": sem.get("category", detection.get("category")),
     }
 
 
